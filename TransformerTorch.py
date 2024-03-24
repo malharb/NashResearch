@@ -23,15 +23,14 @@ class Transformer(nn.Module):
         nn.ReLU(),
     )
 
-    self.positional_encoding = PositionalEncoding(d_model = 64)
+    self.input_layer_norm = nn.LayerNorm(self.d_model)
+    self.positional_encoding_layer = PositionalEncoding(d_model = 64)
 
   def forward(self, x):
     # x is of the form (batch size, num of tokens, num features)
     self.input_embedding = self.input_embedding_layer(x)
-
-
-
-
+    self.input_embedding = self.input_layer_norm(self.input_embedding)
+    self.input_embedding = self.positional_encoding_layer(self.input_embedding)
 
 
 class PositionalEncoding(nn.Module):
@@ -52,3 +51,55 @@ class PositionalEncoding(nn.Module):
   def forward(self, x):
     x += self.pe[:,:x.size(1), :] # adds positional encodings to input embeddings
     return x
+
+
+class MultiHeadAttention(nn.Module):
+  def __init__(self, d_model, num_heads):
+    super(MultiHeadAttention, self).__init__()
+
+    self.d_model = d_model
+    self.num_heads = num_heads
+    self.head_dim = d_model // num_heads # get dimension for each head
+
+    self.query_heads = nn.ModuleList([nn.Linear(self.d_model, self.head_dim) for head in range(num_heads)])
+    self.key_heads = nn.ModuleList([nn.Linear(self.d_model, self.head_dim) for head in range(num_heads)])
+    self.value_heads = nn.ModuleList([nn.Linear(self.d_model, self.head_dim) for head in range(num_heads)])
+
+    self.w_matrix = nn.Linear(self.d_model, self.d_model)
+
+  def forward(self, input_matrix):
+
+    batch_size = input_matrix.size(0)
+    num_tokens = input_matrix.size(1)
+
+    query_matrices = [query_matrix_weights(input_matrix) for query_matrix_weights in self.query_heads]
+    key_matrices = [key_matrix_weights(input_matrix) for key_matrix_weights in self.key_heads]
+    value_matrices = [value_matrix_weights(input_matrix) for value_matrix_weights in self.value_heads]
+
+    z_matrices = []
+
+    for query_matrix, key_matrix, value_matrix in zip(query_matrices, key_matrices, value_matrices):
+       # score_matrix dimension is (batch_size, num_tokens, num_tokens)
+       score_matrix = torch.matmul(query_matrix, key_matrix.transpose(-2,-1)) / math.sqrt(self.head_dim)
+     #  print(f"score_matrix expected shape: (batch_size, num_tokens, num_tokens). Check: {score_matrix.shape == torch.Size([batch_size, num_tokens, num_tokens])}")
+    #   print(f"score_matrix actual shape: {score_matrix.shape}")
+       # attention_weights dimension is (batch_size, num_tokens, num_tokens)
+       attention_weights = torch.softmax(score_matrix, dim = -1)
+      # print(f"attention_weights expected shape: (batch_size, num_tokens, num_tokens). Check: {attention_weights.shape == torch.Size([batch_size, num_tokens, num_tokens])}")
+      # print(f"attention_weights actual shape: {attention_weights.shape}")
+       # attention_matrix dimension is (batch_size, num_tokens, head_dim)
+       attention_matrix = torch.matmul(attention_weights, value_matrix)
+      # print(f"attention_values expected shape: (num_tokens, head_dim). Check: {attention_matrix.shape == torch.Size([batch_size, num_tokens, self.head_dim])}")
+      # print(f"attention_matrix actual shape: {attention_matrix.shape}")
+      # print()
+
+       print(f"single head expected shape = (batch_size, num_tokens, head_dim). real val : {attention_matrix.shape}")
+       z_matrices.append(attention_matrix)
+
+    #print(len(z_matrices))
+    print()
+    multihead_z_concat = torch.cat(z_matrices, dim = -1)
+    print(f"multihead_z_concat expected shape = (batch_size, num_tokens, d_model). real val : {multihead_z_concat.shape}")
+    print()
+    encoder_attention_output = self.w_matrix(multihead_z_concat)
+    print(f"encoder_attention_output expected shape = (batch_size, num_tokens, d_model). real val : {encoder_attention_output.shape}")
