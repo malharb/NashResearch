@@ -22,7 +22,6 @@ class Transformer(nn.Module):
         nn.Linear(in_features = d_model * 2, out_features = d_model),
         nn.ReLU(),
     )
-
     self.input_layer_norm = nn.LayerNorm(self.d_model)
     self.positional_encoding_layer = PositionalEncoding(d_model = 64)
 
@@ -31,7 +30,6 @@ class Transformer(nn.Module):
     self.input_embedding = self.input_embedding_layer(x)
     self.input_embedding = self.input_layer_norm(self.input_embedding)
     self.input_embedding = self.positional_encoding_layer(self.input_embedding)
-
 
 class PositionalEncoding(nn.Module):
   def __init__(self, d_model, max_len = 10000):
@@ -51,6 +49,40 @@ class PositionalEncoding(nn.Module):
   def forward(self, x):
     x += self.pe[:,:x.size(1), :] # adds positional encodings to input embeddings
     return x
+
+class EncoderBlock(nn.Module):
+
+  def __init__(self, num_tokens, d_model):
+    super(EncoderBlock, self).__init__()
+
+    self.num_tokens = num_tokens
+    self.d_model = d_model
+    
+    num_heads = 4
+    self.mha = MultiHeadAttention(d_model, num_heads)
+    self.norm1 = nn.LayerNorm(d_model)
+
+    self.ffn = nn.Sequential(
+        nn.Linear(in_features = d_model, out_features = 4 * d_model),
+        nn.ReLU(),
+        nn.Linear(in_features = 4 * d_model, out_features = d_model)
+    ) 
+    self.norm2 = nn.LayerNorm(d_model)
+
+  def forward(self, x):
+
+    # x is input embeddings of shape (batch_size, num_tokens, d_model)
+
+    mha_out = self.mha(x)
+    residual_addition_attention = x + mha_out
+    norm_attention = self.norm1(residual_addition_attention)
+    
+    ffn_output = self.ffn(norm_attention)
+    residual_addition_ffn = norm_attention + ffn_output
+    
+    encoder_output = self.norm2(residual_addition_ffn)
+
+    return encoder_output
 
 
 class MultiHeadAttention(nn.Module):
@@ -79,27 +111,42 @@ class MultiHeadAttention(nn.Module):
     z_matrices = []
 
     for query_matrix, key_matrix, value_matrix in zip(query_matrices, key_matrices, value_matrices):
-       # score_matrix dimension is (batch_size, num_tokens, num_tokens)
-       score_matrix = torch.matmul(query_matrix, key_matrix.transpose(-2,-1)) / math.sqrt(self.head_dim)
-     #  print(f"score_matrix expected shape: (batch_size, num_tokens, num_tokens). Check: {score_matrix.shape == torch.Size([batch_size, num_tokens, num_tokens])}")
-    #   print(f"score_matrix actual shape: {score_matrix.shape}")
-       # attention_weights dimension is (batch_size, num_tokens, num_tokens)
-       attention_weights = torch.softmax(score_matrix, dim = -1)
-      # print(f"attention_weights expected shape: (batch_size, num_tokens, num_tokens). Check: {attention_weights.shape == torch.Size([batch_size, num_tokens, num_tokens])}")
-      # print(f"attention_weights actual shape: {attention_weights.shape}")
-       # attention_matrix dimension is (batch_size, num_tokens, head_dim)
-       attention_matrix = torch.matmul(attention_weights, value_matrix)
-      # print(f"attention_values expected shape: (num_tokens, head_dim). Check: {attention_matrix.shape == torch.Size([batch_size, num_tokens, self.head_dim])}")
-      # print(f"attention_matrix actual shape: {attention_matrix.shape}")
-      # print()
 
-       print(f"single head expected shape = (batch_size, num_tokens, head_dim). real val : {attention_matrix.shape}")
+       score_matrix = torch.matmul(query_matrix, key_matrix.transpose(-2,-1)) / math.sqrt(self.head_dim)
+       attention_weights = torch.softmax(score_matrix, dim = -1)
+       attention_matrix = torch.matmul(attention_weights, value_matrix)
+
        z_matrices.append(attention_matrix)
 
-    #print(len(z_matrices))
-    print()
     multihead_z_concat = torch.cat(z_matrices, dim = -1)
-    print(f"multihead_z_concat expected shape = (batch_size, num_tokens, d_model). real val : {multihead_z_concat.shape}")
-    print()
     encoder_attention_output = self.w_matrix(multihead_z_concat)
-    print(f"encoder_attention_output expected shape = (batch_size, num_tokens, d_model). real val : {encoder_attention_output.shape}")
+
+    return encoder_attention_output
+
+class ConvolutionLayer(nn.Module):
+  def __init__(self, d_model, vertical, num_features):
+    super(ConvolutionLayer, self).__init__()
+
+    self.num_features = num_features
+    self.kernel_size = (vertical, d_model)
+    self.stride = (vertical, 1)
+  
+    self.conv_layer = nn.Conv2d(in_channels = 1, out_channels = self.num_features, kernel_size = self.kernel_size, stride = self.stride)
+
+  def forward(self, x):
+
+    batch_size = x.size(0)
+    num_tokens = x.size(1)
+
+    print(f"before 4d transform, x shape: {x.shape}")
+    x = x.unsqueeze(0).permute(1,0,2,3)
+    print(f"after 4d transform, x shape: {x.shape}")
+
+    convolution_output = self.conv_layer(x)
+    print(f"convolution output shape: {convolution_output.shape}")
+    n_condensed_tokens = convolution_output.size(2)
+
+    condensed_encoding = (convolution_output.permute(0,2,1,3)).view(batch_size, n_condensed_tokens, self.num_features)
+    print(f"condensed_encoding expected shape: {(batch_size, num_tokens, self.num_features)}, actual shape : {condensed_encoding.shape}")
+
+    return condensed_encoding
