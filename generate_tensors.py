@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import torch
@@ -8,7 +7,7 @@ from datetime import timedelta
 num_persons = 10
 num_days = 14
 num_minutes = 1440
-num_samples = 1000  # Define the number of samples
+num_samples = 100  # Define the number of samples
 d_model = 8  # Assuming dimensions 0-3 are used for other metrics, and 4-7 for sleep stages
 entries_per_day_per_person = num_minutes
 start_date = pd.to_datetime('2021-01-01')
@@ -32,16 +31,16 @@ for person_id in range(1, num_persons + 1):
                 step_value = np.random.randint(0, 200)
                 heart_rate_entries.append([person_id, current_date + timedelta(minutes=minute), heart_rate_value])
                 step_entries.append([person_id, current_date + timedelta(minutes=minute), step_value])
-        
+
         # Generate activity summary data once per day as before
         activity_summary_entries.append([
-            person_id, 
-            current_date.date(), 
+            person_id,
+            current_date.date(),
             np.random.randint(1000, 2000),  # activity_calories
             np.random.randint(1000, 1500),  # calories_bmr
             np.random.randint(3000, 5000)   # steps
         ])
-        
+
         # Increase the frequency and duration of sleep sessions
         num_sleep_sessions = np.random.randint(3, 7)  # 3 to 6 sleep sessions per day
         for _ in range(num_sleep_sessions):
@@ -92,24 +91,27 @@ def init_tensors(num_samples):
 def process_sample(sample_index, row, tensors):
     person_id = row['person_id']
     endstamp = row['condition_start_datetime']
-    start_stamp = endstamp - pd.Timedelta(days=num_days)
+    start_stamp = endstamp - timedelta(days=num_days - 1)  # Start 13 days before the condition_start_datetime
 
-    person_heart_rate_data = heart_rate_data[(heart_rate_data['person_id'] == person_id) & 
-                                             (heart_rate_data['datetime'] >= start_stamp) & 
-                                             (heart_rate_data['datetime'] < endstamp)].copy()
+    person_heart_rate_data = heart_rate_data[(heart_rate_data['person_id'] == person_id) &
+                                             (heart_rate_data['datetime'] >= start_stamp) &
+                                             (heart_rate_data['datetime'] <= endstamp)].copy()
 
-    person_step_data = step_data[(step_data['person_id'] == person_id) & 
-                                 (step_data['datetime'] >= start_stamp) & 
-                                 (step_data['datetime'] < endstamp)].copy()
+    person_step_data = step_data[(step_data['person_id'] == person_id) &
+                                 (step_data['datetime'] >= start_stamp) &
+                                 (step_data['datetime'] <= endstamp)].copy()
 
-    person_activity_summary = activity_summary_data[(activity_summary_data['person_id'] == person_id) & 
-                                                    (activity_summary_data['date'] >= start_stamp.date()) & 
-                                                    (activity_summary_data['date'] < endstamp.date())].copy()
+    person_activity_summary = activity_summary_data[(activity_summary_data['person_id'] == person_id) &
+                                                    (activity_summary_data['date'] >= start_stamp.date()) &
+                                                    (activity_summary_data['date'] <= endstamp.date())].copy()
 
     person_heart_rate_data['day_index'] = (person_heart_rate_data['date'] - start_stamp.date()).apply(lambda x: x.days)
     person_step_data['day_index'] = (person_step_data['date'] - start_stamp.date()).apply(lambda x: x.days)
-    
-    person_sleep_data = sleep_data[sleep_data['person_id'] == person_id]
+
+    person_sleep_data = sleep_data[sleep_data['person_id'] == person_id].copy()
+    person_sleep_data['day_index'] = (person_sleep_data['start_datetime'].dt.date - start_stamp.date()).apply(lambda x: x.days)
+
+    person_activity_summary['day_index'] = (person_activity_summary['date'] - start_stamp.date()).apply(lambda x: x.days)
 
     for day_index in range(num_days):
         hr_day_mask = person_heart_rate_data['day_index'] == day_index
@@ -127,7 +129,7 @@ def process_sample(sample_index, row, tensors):
             tensors[day_index][sample_index, step_minute_indices, 1] = torch.tensor(step_values, dtype=torch.float)
 
         # Handle activity summary data
-        summary_row = person_activity_summary[person_activity_summary['date'] == (start_stamp + pd.Timedelta(days=day_index)).date()]
+        summary_row = person_activity_summary[person_activity_summary['day_index'] == day_index]
         if not summary_row.empty:
             summary_row = summary_row.iloc[0]
             calories_bmr_per_minute = summary_row['calories_bmr'] / num_minutes
@@ -136,7 +138,7 @@ def process_sample(sample_index, row, tensors):
             day_heart_rate_data = person_heart_rate_data[person_heart_rate_data['day_index'] == day_index]
 
             merged_data = pd.merge(day_step_data, day_heart_rate_data, on='minute', how='outer', suffixes=('_step', '_hr'))
-            merged_data = merged_data.sort_values('minute').reset_index(drop=True)
+         #   merged_data = merged_data.sort_values('minute').reset_index(drop=True)
 
             active_minutes_mask = (merged_data['step_value'] > 20) | (merged_data['heart_rate_value'] > 100)
             active_minutes_indices = merged_data.loc[active_minutes_mask, 'minute'].values
@@ -152,14 +154,15 @@ def process_sample(sample_index, row, tensors):
             tensors[day_index][sample_index, active_minutes_indices, 3] = activity_calories_per_active_minute
 
         # Handle sleep data
-        current_date = start_stamp + pd.Timedelta(days=day_index)
-        daily_sleep_data = person_sleep_data[person_sleep_data['sleep_date'] == current_date]
+        sleep_day_mask = person_sleep_data['day_index'] == day_index
+        daily_sleep_data = person_sleep_data[sleep_day_mask]
 
         if not daily_sleep_data.empty:
-            start_minutes = ((daily_sleep_data['start_datetime'] - daily_sleep_data['start_datetime'].dt.normalize()).dt.total_seconds() // 60).astype(int)
+            # Calculate start and end minutes based on the timestamp
+            start_minutes = daily_sleep_data['start_datetime'].dt.hour * 60 + daily_sleep_data['start_datetime'].dt.minute
             end_minutes = start_minutes + daily_sleep_data['duration_in_min']
             sleep_levels = daily_sleep_data['level'].map(lambda x: sleep_stage_to_dimension[x]).values
-            
+
             for start_minute, end_minute, sleep_level in zip(start_minutes, end_minutes, sleep_levels):
                 if end_minute > num_minutes:
                     end_minute = num_minutes
@@ -178,7 +181,7 @@ def count_non_zero_elements(tensors):
 def average_non_zero_minutes_per_sample(tensors, num_samples):
     total_non_zero_minutes = 0
     total_samples = num_samples * len(tensors)
-    
+
     for tensor in tensors:
         # Count non-zero minutes across all dimensions for each sample
         non_zero_count = (tensor != 0).any(dim=2).sum().item()
