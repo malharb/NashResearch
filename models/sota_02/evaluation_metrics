@@ -1,0 +1,6 @@
+Testing data split:
+23 depressed patients
+82 healthy patients
+
+BCE Test Loss: 0.487
+AUROC score: 0.748
