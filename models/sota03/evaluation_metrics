@@ -1,0 +1,6 @@
+Testing dataset:
+Healthy patients: 429 patients
+Depressed patients: 188 patients
+
+AUROC Score: 0.7608118831523087
+AUPRC Score: 0.653580781656332
