@@ -1,35 +1,59 @@
-
 import torch
 import torch.nn as nn
 import math
 
 class HaceNet(nn.Module):
-  def __init__(self, num_encoder_levels = 4, num_heads = 5, d_model_in_list = [32,32,(32,48),32], d_model_out_list = [10,20,(30,32),40], token_in_list = [1440, 288, (144, 216), 84], token_out_list = [144, 72, (24, 36), 84], num_metrics = 5, dropout = 0.05, batch_size = 64, token_length = 20160):
+  def __init__(self, num_encoder_levels = 4, num_heads = 5, d_model_in_list = [32,32,(32,48),32], d_model_out_list = [10,20,(30,32),40], token_in_list = [1440, 288, (144, 216), 84], token_out_list = [144, 72, (24, 36), 84], num_metrics = 12, dropout = 0.05, batch_size = 64, token_length = 20160):
     super(HaceNet, self).__init__()
 
     self.num_encoder_levels = num_encoder_levels
+
     self.num_heads = num_heads
-    self.d_model_in_list = d_model_in_list 
+    self.d_model_in_list = d_model_in_list # len equal to num_encoder_layers + 1
     self.d_model_out_list = d_model_out_list
     self.num_metrics = num_metrics
     self.dropout = dropout
     self.batch_size = batch_size
-    self.token_in_list = token_in_list  
-    self.token_out_list = token_out_list 
+
+    # imp: token_out_list[i] != token_in_list[i+1] because we're concattenating
+    # for e.g. token_in_list = [1440, 288] and token_out_list = [144, 28]
+
+    # similarly, d_model_out_list[i] != d_model_in_list[i + 1] because input layers might be projecting
+    # for e.g.  d_model_in_list = [32, 48], d_model_out_list = [16, 12]
+    # in the above case
+
+    self.token_in_list = token_in_list  # len equal to num_encoder_layers
+    self.token_out_list = token_out_list # len equal to num_encoder_layers
 
     # input embedding layer
     self.input_encodings = nn.ModuleList([InputEncoding(d_model_in = self.num_metrics, d_model_out = self.d_model_in_list[0])])
+   # print('finished first input encoding layer')
     for dmo_index in range(len(self.d_model_out_list) - 1):
+      #print(dmo_index)
+
+   #   print(f"starting dmo_index: {dmo_index}")
       if (dmo_index == 1):
         for sub_index in range(2):
+  #        print(f"dmo_index:{dmo_index}, sub_index:{sub_index}, d_model_in:{self.d_model_out_list[dmo_index]}, d_model_out:{self.d_model_in_list[dmo_index + 1][sub_index]}")
           self.input_encodings.append(InputEncoding(d_model_in = self.d_model_out_list[dmo_index], d_model_out = self.d_model_in_list[dmo_index + 1][sub_index]))
         continue
 
       if (dmo_index == 2):
         for sub_index in range(2):
+   #       print(f"d_model_out_list[dmo_index][sub_index] = {self.d_model_out_list[dmo_index][sub_index]}")
+   #       print(f"d_model_in_list[dmo_index + 1][sub_index] = {self.d_model_in_list[dmo_index + 1]}")
           self.input_encodings.append(InputEncoding(d_model_in = self.d_model_out_list[dmo_index][sub_index], d_model_out = self.d_model_in_list[dmo_index + 1]))
         continue
+
+  #    print(f"dmo_index: {dmo_index} & d_model_in : {self.d_model_out_list[dmo_index]} & d_model_out : {self.d_model_in_list[dmo_index+1]}")
       self.input_encodings.append(InputEncoding(d_model_in = self.d_model_out_list[dmo_index], d_model_out = self.d_model_in_list[dmo_index + 1]))
+  #    print()
+
+  #  print(f"number of input encodings blocks: {len(self.input_encodings)}")
+  #  print(self.input_encodings)
+
+  #  print()
+  #  print('finished input encodings')
 
     # position encoding layer
     self.positional_encodings = nn.ModuleList()
@@ -41,26 +65,36 @@ class HaceNet(nn.Module):
 
       self.positional_encodings.append(PositionalEncoding(d_model = self.d_model_in_list[k], max_len = token_in_list[k]))
 
-    #  segment encodings
-    self.segment_encodings_lvl_1 = []
+#    print("finished position encoding")
+    # creating segment encodings
+    self.segment_encodings_lvl_1 = nn.ParameterList()
     for segment in range(2):
       self.segment_encodings_lvl_1.append(nn.Parameter(torch.randn(1, self.d_model_in_list[1])))
 
-    self.segment_encodings_lvl_2_s1 = []
-    self.segment_encodings_lvl_2_s2 = []
+ #   print("finished segment encodings lvl 1")
+
+    self.segment_encodings_lvl_2_s1 = nn.ParameterList()
+    self.segment_encodings_lvl_2_s2 = nn.ParameterList()
 
     for segment in range(2):
       self.segment_encodings_lvl_2_s1.append(nn.Parameter(torch.randn(1, self.d_model_in_list[2][0])))
     for segment in range(3):
       self.segment_encodings_lvl_2_s2.append(nn.Parameter(torch.randn(1, self.d_model_in_list[2][1])))
 
-    self.segment_encodings_lvl_3 = []
+ #   print("finished segment ecndoings lvl 2")
+
+    self.segment_encodings_lvl_3 = nn.ParameterList()
     for segment in range(3):
       self.segment_encodings_lvl_3.append(nn.Parameter(torch.randn(1, self.d_model_in_list[3])))
 
-    #hace layers
+
+ #   print("finished segment encodings")
+
     self.hace_layer_level = [0,1,2,2,3]
     self.hace_blocks = nn.ModuleList()
+
+#d_model_in_list = [32,32,(32,32),32], d_model_out_list = [32,32,(32,32),32],
+#token_in_list = [1440, 288, (144, 216), 84], token_out_list = [144, 72, (28, 28), 84]
 
     for i in range(self.num_encoder_levels):
       if (i == 2):
@@ -68,63 +102,105 @@ class HaceNet(nn.Module):
           self.hace_blocks.append(HACEBlock(num_tokens_in = token_in_list[i][j],
                                   num_tokens_out = token_out_list[i][j],
                                   d_model_in = d_model_in_list[i][j],
-                                  d_model_out = d_model_out_list[i][j]))
+                                  d_model_out = d_model_out_list[i][j],
+                                  num_heads = self.num_heads))
+
         continue
       self.hace_blocks.append(HACEBlock(num_tokens_in = token_in_list[i],
                                       num_tokens_out = token_out_list[i],
                                       d_model_in = d_model_in_list[i],
-                                      d_model_out = d_model_out_list[i]))
+                                      d_model_out = d_model_out_list[i],
+                                       num_heads = self.num_heads))
 
-    # post processing
-    self.postprocessing_linear_1 = nn.Linear(in_features = d_model_out_list[(self.num_encoder_levels) - 1], out_features = 42)
-    self.postprocessing_linear_2 = nn.Linear(in_features = 42, out_features = 16)
+ #   self.hace_blocks = nn.ModuleList([HACEBlock(num_tokens_in = self.token_in_list[i],
+  #                                              num_tokens_out = self.token_out_list[i],
+   #                                             d_model_in = self.d_model_list[i],
+    #                                            d_model_out = self.d_model_out_list[i]) for i in range(self.num_encoders)])
+
+    self.postprocessing_linear_1 = nn.Linear(in_features = d_model_out_list[(self.num_encoder_levels) - 1], out_features = 64)
+    self.postprocessing_linear_2 = nn.Linear(in_features = 64, out_features = 42)
+    #adding
+    self.postprocessing_linear_2_1 = nn.Linear(in_features = 42, out_features = 16)
     self.postprocessing_linear_3 = nn.Linear(in_features = 16, out_features = 1)
 
     self.pre_output_linear = nn.Linear(in_features = self.token_out_list[-1], out_features = 1)
     self.output_sigmoid = nn.Sigmoid()
 
+    print(f"input encodings length: {len(self.input_encodings)}")
+    print(f"position encodings length: {len(self.positional_encodings)}")
+    print(f"num of hace blocks: {len(self.hace_blocks)}")
+
+
   def forward(self, X):
 
- #  print("Processing level 1")
+  #  print()
+  #  print("Processing lvl 1: ")
     L1 = X
+    # get input embeddings and position encodings
+   # print(self.input_encodings[0])
     for day_matrix_idx in range(14):
+     # print(f"starting lvl 1 input encoding work for index {day_matrix_idx}")
       L1[day_matrix_idx] = (self.input_encodings[0])(L1[day_matrix_idx])
+    #  print(f"lvl 1 input encoding working for index {day_matrix_idx}")
       L1[day_matrix_idx] = (self.positional_encodings[0])(L1[day_matrix_idx])
       L1[day_matrix_idx] = (self.hace_blocks[0])(L1[day_matrix_idx])
 
-  #  print("Processing level 2")
+  #  print("Done Processing lvl 1: ")
+
+   # print(L1[0].shape)
+   # print()
+  #  print("Processing lvl 2: ")
     L2 = []
     L2_idx = 0
     segment_l1_length = 144
     for day_matrix_idx in range(0,14,2):
       L2.append(torch.cat((L1[day_matrix_idx], L1[day_matrix_idx + 1]), dim = 1))
+   #   print(f"{day_matrix_idx}: {L2[L2_idx].shape}")
+      #input encodings
+ #     print(self.input_encodings[1])
       L2[L2_idx] = (self.input_encodings[1])(L2[L2_idx])
+     # print(f"lvl2 input encodings done for idx {day_matrix_idx}")
+   #   print(f"new shape for {day_matrix_idx}: {L2[L2_idx].shape}")
+      #segment encodings
       (L2[L2_idx])[:, :segment_l1_length, :] += self.segment_encodings_lvl_1[0]
       (L2[L2_idx])[:, segment_l1_length:, :] += self.segment_encodings_lvl_1[1]
+      #position encodings
       L2[L2_idx] = (self.positional_encodings[1])(L2[L2_idx])
       L2[L2_idx] = (self.hace_blocks[1])(L2[L2_idx])
       L2_idx += 1
 
-   # print("Processing level 3")
+ #   print("Done Processing lvl 2: ")
+  #  print("Processing lvl 3: ")
 
     L3 = []
     segment_l3_s1_length = 72
     segment_l3_s2_length = 72
 
     L3.append(torch.cat((L2[0], L2[1]), dim = 1))
+  #  print(self.input_encodings[2])
+  #  print(L3[0].shape)
     L3[0] = (self.input_encodings[2])(L3[0])
     (L3[0])[:, :segment_l3_s1_length, :] += self.segment_encodings_lvl_2_s1[0]
     (L3[0])[:, segment_l3_s1_length:, :] += self.segment_encodings_lvl_2_s1[1]
     L3[0] = (self.positional_encodings[2])(L3[0])
     L3[0] = (self.hace_blocks[2])(L3[0])
 
+   # print(f"{L3[0].shape}")
+  #  print("Done with lvl3 first block")
+
     L3.append(torch.cat(([L2[2], L2[3], L2[4]]), dim = 1))
+    #print(self.input_encodings[3])
+  #  print(L3[1].shape)
     L3[1] = (self.input_encodings[3])(L3[1])
+  #  print(f"After encoding: {L3[1].shape}")
     (L3[1])[:, :segment_l3_s2_length, :] += self.segment_encodings_lvl_2_s2[0]
     (L3[1])[:, segment_l3_s2_length:2*segment_l3_s2_length, :] += self.segment_encodings_lvl_2_s2[1]
     (L3[1])[:, 2*segment_l3_s2_length:, :] += self.segment_encodings_lvl_2_s2[2]
     L3[1] = (self.positional_encodings[3])(L3[1])
+   # print(f"After positional encoding: {L3[1].shape}")
+   # print(self.hace_blocks[3])
     L3[1] = (self.hace_blocks[3])(L3[1])
+ #   print(f"After HACE block: {L3[1].shape}")
 
     L3.append(torch.cat((L2[5], L2[6]), dim = 1))
     L3[2] = (self.input_encodings[2])(L3[2])
@@ -133,29 +209,63 @@ class HaceNet(nn.Module):
     L3[2] = (self.positional_encodings[2])(L3[2])
     L3[2] = (self.hace_blocks[2](L3[2]))
 
-  #  print("Processing level 4")
+  #  print(f"L3 shape: {len(L3)}")
+
+ #   print("Done Processing lvl 3: ")
+  #  print("Processing lvl 4: ")
 
     L4_pre = L3
     segment_l4_length = 28
+
+  #  print(f"L4_pre shape: {len(L4_pre)}")
+   # print(L4_pre[0].shape)
+   # print(L4_pre[1].shape)
+   # print(L4_pre[2].shape)
+
+   # print(self.input_encodings[4])
+   # print(self.input_encodings[5])
 
     L4_pre[0] = (self.input_encodings[4])(L4_pre[0])
     L4_pre[1] = (self.input_encodings[5])(L4_pre[1])
     L4_pre[2] = (self.input_encodings[4])(L4_pre[2])
 
     L4 = [torch.cat((L4_pre[0], L4_pre[1], L4_pre[2]), dim = 1)]
+
+
+    # project L3[0] and L3[2] with input_encodings[4]
+    # project L3[1] with input_encodings[5]
+   # L4[0] = (self.input_encodings[4])(L4[0])
     (L4[0])[:, :segment_l4_length, :] += self.segment_encodings_lvl_3[0]
     (L4[0])[:, segment_l4_length:2*segment_l4_length, :] += self.segment_encodings_lvl_3[1]
     (L4[0])[:, 2*segment_l4_length:, :] += self.segment_encodings_lvl_3[2]
     L4[0] = (self.positional_encodings[4])(L4[0])
     L4[0] = (self.hace_blocks[4])(L4[0])
+  #  print("Done Processing lvl 4 ")
 
+
+ #   print(L4[0][0])
+  #  print(L4[0][1])
+   # print(L4[0][2])
+
+  #  print()
 
     postprocessing_1_output = self.postprocessing_linear_1(L4[0])
     postprocessing_2_output = self.postprocessing_linear_2(postprocessing_1_output)
-    postprocessing_3_output = self.postprocessing_linear_3(postprocessing_2_output)
+    postprocessing_2_1_output = self.postprocessing_linear_2_1(postprocessing_2_output)
+    postprocessing_3_output = self.postprocessing_linear_3(postprocessing_2_1_output)
     postprocessing_squeezed = postprocessing_3_output.squeeze(-1)
+  #  print("Done Postprocessing")
+
+
     pre_sigmoid_output = self.pre_output_linear(postprocessing_squeezed)
+ #   print("Done pre sigmoid")
+
     output_layer = self.output_sigmoid(pre_sigmoid_output)
+ #   print("Done output sigmoid")
+
+ #   print(f"Probability of disorder: {output_layer}")
+    return output_layer
+   # return output_layer
 
 
 class InputEncoding(nn.Module):
@@ -196,7 +306,7 @@ class PositionalEncoding(nn.Module):
     return x
 
 class HACEBlock(nn.Module):
-  def __init__(self, num_tokens_in, num_tokens_out, d_model_in, d_model_out):
+  def __init__(self, num_tokens_in, num_tokens_out, d_model_in, d_model_out, num_heads):
     super(HACEBlock, self).__init__()
 
     self.num_tokens_in = num_tokens_in
@@ -208,8 +318,8 @@ class HACEBlock(nn.Module):
 
     #print(f"HACEBlock, d_model_in: {d_model_in}")
 
-    num_heads = 4
-    self.mha = MultiHeadAttention(d_model_in, num_heads)
+    self.num_heads = num_heads
+    self.mha = MultiHeadAttention(d_model_in, self.num_heads)
     self.norm1 = nn.LayerNorm(d_model_in)
 
     self.ffn = nn.Sequential(
@@ -273,6 +383,7 @@ class MultiHeadAttention(nn.Module):
        z_matrices.append(attention_matrix)
 
     multihead_z_concat = torch.cat(z_matrices, dim = -1)
+   # print(multihead_z_concat.shape)
     encoder_attention_output = self.w_matrix(multihead_z_concat)
 
     return encoder_attention_output
